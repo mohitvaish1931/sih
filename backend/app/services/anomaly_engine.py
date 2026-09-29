@@ -8,8 +8,9 @@ on a reference population:
   * a fixed, seeded baseline of 400 simulated ordinary wallet histories
     (retail, saver, merchant, trader, payroll) passed through the very same
     feature pipeline, so the model is meaningful even on a fresh install.
-  * once available, ~80 randomly sampled live mainnet addresses taken from
-    the latest blocks (build_live_reference, run in the background at startup).
+  * ~80 randomly sampled live mainnet addresses taken from recent blocks. They
+    ship pre-computed in app/data/ml_reference.json (so cold starts need no
+    network or CPU); build_live_reference tops the set up in the background.
 The target wallet is scored against that population (percentile of its
 isolation score) and the features that deviate most from the population
 median are reported, so the ML verdict is explainable.
@@ -22,6 +23,7 @@ population median, so only risk-relevant unusualness can raise the score.
 import json
 import logging
 import math
+import os
 import statistics
 import threading
 import time
@@ -205,13 +207,33 @@ def remember_features(address: str, feats: Optional[Dict[str, float]]):
 LIVE_REFERENCE_TARGET = 80
 
 
+_BUNDLED_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "ml_reference.json")
+_bundled: Dict[str, Dict] = {}
+
+
+def bundled_reference() -> Dict[str, Dict]:
+    """Pre-computed live-mainnet reference shipped with the code (no network or CPU at startup)."""
+    if not _bundled and os.path.exists(_BUNDLED_PATH):
+        try:
+            with open(_BUNDLED_PATH, encoding="utf-8") as fh:
+                data = json.load(fh)
+            if data.get("feature_version") == FEATURE_VERSION:
+                _bundled.update({w["address"]: w["features"] for w in data.get("wallets", [])})
+        except (OSError, ValueError, KeyError) as exc:
+            log.warning("Bundled ML reference unreadable: %s", exc)
+    return _bundled
+
+
 def _live_reference(db: Session) -> List[List[float]]:
+    feats = dict(bundled_reference())
     try:
-        rows = db.query(MlReference.features_json).limit(500).all()
-        feats = [json.loads(r[0]) for r in rows]
-        return [_feature_vector(f) for f in feats if f.get("_v") == FEATURE_VERSION]
+        for addr, fj in db.query(MlReference.address, MlReference.features_json).limit(500).all():
+            f = json.loads(fj)
+            if f.get("_v") == FEATURE_VERSION:
+                feats[addr] = f
     except Exception:
-        return []
+        pass
+    return [_feature_vector(f) for f in feats.values()]
 
 
 def _population(db: Session) -> np.ndarray:
@@ -245,7 +267,7 @@ def build_live_reference(db: Session, target: int = LIVE_REFERENCE_TARGET) -> in
     from app.services.blockchain_sync import _view
     from app.utils import from_unix
 
-    have = set()
+    have = set(bundled_reference())      # shipped reference counts towards the target
     for addr, fj in db.query(MlReference.address, MlReference.features_json).all():
         if json.loads(fj).get("_v") == FEATURE_VERSION:
             have.add(addr)

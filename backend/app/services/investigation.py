@@ -65,17 +65,23 @@ def _run(db: Session, address: str, refresh: bool) -> Dict:
 
     sync = sync_wallet_transactions(db, address, force=refresh)
     timings["sync_ms"] = int((time.time() - t0) * 1000)
+    t = time.time()
     views = load_wallet_txs(db, address)
+    timings["load_ms"] = int((time.time() - t) * 1000)
 
+    t = time.time()
     price = get_btc_price_usd()
     usd = price.get("usd", 0) or 0
+    timings["price_ms"] = int((time.time() - t) * 1000)
 
     t = time.time()
     heur = run_heuristics(address, views, db, network_hops=0 if demo else 4)
     timings["heuristics_ms"] = int((time.time() - t) * 1000)
 
+    t = time.time()
     flows = counterparty_flows(address, views)
     cluster = common_input_cluster(db, address, views)
+    timings["cluster_ms"] = int((time.time() - t) * 1000)
 
     t = time.time()
     top_cp = sorted(flows, key=lambda a: -(flows[a]["received_from"] + flows[a]["sent_to"]))[:60]
@@ -95,8 +101,10 @@ def _run(db: Session, address: str, refresh: bool) -> Dict:
         term.update({"entity_name": ent.get("entity_name"), "category": ent.get("category"),
                      "category_label": ent.get("category_label")})
 
+    t = time.time()
     exposure = analyze_exposure(db, address, views, entities, flows)
     attribute_cluster(cluster, entities)
+    timings["exposure_ms"] = int((time.time() - t) * 1000)
 
     t = time.time()
     ml = run_isolation_forest(db, address, views)
@@ -212,7 +220,9 @@ def _run(db: Session, address: str, refresh: bool) -> Dict:
     inv["explanation_source"] = explanation["source"]
     inv["recommendations"] = recommendations(inv)
 
+    t = time.time()
     _persist(db, inv, heur["score"], exposure["score"], geo["score"], ml["score"])
+    timings["persist_ms"] = int((time.time() - t) * 1000)
     timings["total_ms"] = int((time.time() - t0) * 1000)
     inv["timings"] = timings
     return inv
