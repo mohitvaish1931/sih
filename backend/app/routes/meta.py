@@ -1,4 +1,5 @@
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import APIRouter, Depends
 from sqlalchemy import func, text
@@ -8,7 +9,7 @@ from app.config import OLLAMA_MODEL
 from app.database import get_db, IS_SQLITE
 from app.demo_scenarios import SCENARIOS
 from app.models import AddressTx, AnalysisResult, Alert, ChainTx, RelayObservation
-from app.services.bitcoin_api import get_latest_blocks
+from app.services.bitcoin_api import get_latest_blocks, probe, breaker_state
 from app.services.entity_tagger import known_entity_index
 from app.services.explainability import llm_available
 from app.services.investigation import ENGINE_VERSION
@@ -33,6 +34,24 @@ def health(db: Session = Depends(get_db)):
         "blockchain": {"ok": bool(blocks), "tip_height": blocks[0]["height"] if blocks else None},
         "llm": {"available": llm_available(), "model": OLLAMA_MODEL},
     }
+
+
+PROVIDERS = {
+    "blockstream": "https://blockstream.info/api/blocks/tip/height",
+    "mempool_space": "https://mempool.space/api/blocks/tip/height",
+    "blockchain_info": "https://blockchain.info/q/getblockcount",
+    "coingecko": "https://api.coingecko.com/api/v3/ping",
+    "walletexplorer": "https://www.walletexplorer.com/api/1/address-lookup?address=1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa&caller=sifra",
+    "ip_api": "http://ip-api.com/json/8.8.8.8?fields=status",
+}
+
+
+@router.get("/api/diagnostics")
+def diagnostics():
+    """Reachability of every external provider from this server (useful on cloud hosts)."""
+    with ThreadPoolExecutor(max_workers=len(PROVIDERS)) as pool:
+        results = dict(zip(PROVIDERS, pool.map(probe, PROVIDERS.values())))
+    return {"providers": results, "circuit_breaker": breaker_state()}
 
 
 @router.get("/api/stats")

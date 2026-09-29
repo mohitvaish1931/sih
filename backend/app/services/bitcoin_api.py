@@ -5,15 +5,25 @@ Providers: Blockstream Esplora -> Mempool.space Esplora -> Blockchain.info
 """
 
 import logging
+import os
+import socket
 import threading
 import time
 from typing import Optional, Dict, Any, List
+from urllib.parse import urlparse
 
 import requests
+import urllib3.util.connection as urllib3_connection
 
 from app.config import HTTP_TIMEOUT, SYNC_MAX_TXS
 
 log = logging.getLogger("sifra.btc")
+
+# Many cloud containers (Render, Railway, Docker) have no IPv6 route. urllib3 tries every
+# AAAA record first and waits the full connect timeout on each, which turned every
+# provider call into a ~80 s stall. Resolve IPv4 only unless explicitly disabled.
+if os.getenv("FORCE_IPV4", "true").lower() in ("1", "true", "yes"):
+    urllib3_connection.allowed_gai_family = lambda: socket.AF_INET
 
 USER_AGENT = "SIFRA/3.0 (blockchain-forensics)"
 ESPLORA_BASES = ["https://blockstream.info/api", "https://mempool.space/api"]
@@ -64,23 +74,89 @@ def _session() -> requests.Session:
     return s
 
 
+# ---------------------------------------------------------------------------
+# Circuit breaker: a provider that just failed (blocked, rate-limited, hanging)
+# is skipped for a while so requests fall through to the next provider at once
+# instead of each paying the full timeout. Cloud hosts often hit this.
+# ---------------------------------------------------------------------------
+_host_down: Dict[str, Dict[str, Any]] = {}
+_breaker_lock = threading.Lock()
+BREAKER_SECONDS = 180
+CONNECT_TIMEOUT = 3.05
+
+
+def _host(url: str) -> str:
+    return urlparse(url).hostname or url
+
+
+def _is_down(host: str) -> bool:
+    with _breaker_lock:
+        state = _host_down.get(host)
+        return bool(state and state["until"] > time.time())
+
+
+def _trip(host: str, reason: str, seconds: float = BREAKER_SECONDS):
+    with _breaker_lock:
+        _host_down[host] = {"until": time.time() + seconds, "reason": reason}
+    log.warning("Provider %s unavailable (%s) - skipping it for %ds", host, reason, seconds)
+
+
+def _reset(host: str):
+    if host in _host_down:
+        with _breaker_lock:
+            _host_down.pop(host, None)
+
+
+def breaker_state() -> Dict[str, Dict[str, Any]]:
+    now = time.time()
+    with _breaker_lock:
+        return {h: {"reason": s["reason"], "retry_in_s": int(s["until"] - now)}
+                for h, s in _host_down.items() if s["until"] > now}
+
+
 def _get_json(url: str, timeout: float = HTTP_TIMEOUT, retries: int = 2) -> Optional[Any]:
-    """GET request with automatic retries on network errors and 429s."""
+    """GET with retries, a short connect timeout and a per-host circuit breaker."""
+    host = _host(url)
+    if _is_down(host):
+        return None
     for attempt in range(retries + 1):
         try:
-            res = _session().get(url, timeout=timeout)
+            res = _session().get(url, timeout=(CONNECT_TIMEOUT, timeout))
             if res.status_code == 200:
+                _reset(host)
                 return res.json()
             if res.status_code == 429:
-                time.sleep(1.5 * (attempt + 1))
-                continue
+                if attempt < retries:
+                    time.sleep(1.0 * (attempt + 1))
+                    continue
+                _trip(host, "rate limited (429)", 60)
+                return None
+            if res.status_code == 403:
+                _trip(host, "blocked (403)")
+                return None
             if 400 <= res.status_code < 500:
                 return None  # invalid address etc. - retrying will not help
-        except (requests.exceptions.RequestException, ValueError):
-            if attempt < retries:
-                time.sleep(0.5 * (attempt + 1))
+        except ValueError:
+            return None
+        except requests.exceptions.RequestException as exc:
+            if attempt < retries and not isinstance(exc, requests.exceptions.ConnectTimeout):
+                time.sleep(0.4 * (attempt + 1))
                 continue
+            _trip(host, type(exc).__name__)
+            return None
+    _trip(host, "server errors")
     return None
+
+
+def probe(url: str, timeout: float = 6.0) -> Dict[str, Any]:
+    """Diagnostics: one direct request, bypassing cache and breaker."""
+    start = time.time()
+    try:
+        res = requests.get(url, timeout=(CONNECT_TIMEOUT, timeout), headers={"User-Agent": USER_AGENT})
+        return {"url": url, "ok": res.status_code == 200, "status": res.status_code,
+                "ms": int((time.time() - start) * 1000)}
+    except requests.exceptions.RequestException as exc:
+        return {"url": url, "ok": False, "error": type(exc).__name__, "ms": int((time.time() - start) * 1000)}
 
 
 # ---------------------------------------------------------------------------

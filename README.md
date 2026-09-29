@@ -107,7 +107,8 @@ database to create. Demo cases are seeded automatically on startup.
 **2. Frontend on Vercel**
 - Import the repo and keep the **Root Directory empty** (repo root). The root `vercel.json` installs and
   builds `frontend/` and serves `frontend/dist`. (Setting Root Directory to `frontend` also works.)
-- Environment variable `VITE_API_BASE` = `https://<service>.onrender.com/api` (note the `/api`), then redeploy.
+- Environment variable `VITE_API_BASE` = `https://<service>.onrender.com` (the `/api` suffix is optional), then redeploy.
+- `GET /api/diagnostics` on the API shows which blockchain providers are reachable from the host.
 - Routing is hash-based (`#/wallet/<address>`), so no rewrites are needed.
 
 **3. Relay sensor (optional)** runs on any always-on machine:

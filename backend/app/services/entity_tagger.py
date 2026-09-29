@@ -205,6 +205,9 @@ def tag_address(address: str, allow_remote: bool = True) -> Dict[str, Any]:
 
 def _lookup_wallet_explorer(address: str):
     """Query WalletExplorer.com. Returns (entity, lookup_succeeded)."""
+    from app.services.bitcoin_api import _is_down, _trip
+    if _is_down("www.walletexplorer.com"):
+        return _unknown(address), False
     try:
         res = requests.get(
             "https://www.walletexplorer.com/api/1/address-lookup",
@@ -212,6 +215,8 @@ def _lookup_wallet_explorer(address: str):
             timeout=ENTITY_LOOKUP_TIMEOUT,
             headers={"User-Agent": "SIFRA/3.0"},
         )
+        if res.status_code in (403, 429):
+            _trip("www.walletexplorer.com", f"HTTP {res.status_code}", 120)
         if res.status_code != 200:
             return _unknown(address), False
         data = res.json()
@@ -222,6 +227,9 @@ def _lookup_wallet_explorer(address: str):
             return _entity(address, label, cat, _CATEGORY_MODIFIERS.get(cat, 0),
                            _CATEGORY_ICONS.get(cat, "❓"), "walletexplorer", "high", wallet_id), True
         return _unknown(address, "walletexplorer", wallet_id), True
+    except requests.exceptions.ConnectTimeout:
+        _trip("www.walletexplorer.com", "ConnectTimeout", 120)
+        return _unknown(address), False
     except Exception:
         return _unknown(address), False
 

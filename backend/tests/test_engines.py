@@ -165,3 +165,19 @@ def test_service_dampening_keeps_exposure_evidence():
     damped = fuse(comps, ex)["risk_score"]
     exposure_only = fuse({"exposure": {"score": 80}}, {})["risk_score"]
     assert exposure_only <= damped < plain
+
+
+# ---------------------------------------------------------------------------
+# Provider circuit breaker
+# ---------------------------------------------------------------------------
+def test_failing_provider_is_skipped_until_breaker_expires():
+    import time as _t
+    from app.services import bitcoin_api as B
+    url = "https://unreachable.example/api/x"
+    assert B._get_json(url, retries=0) is None          # network is blocked in tests
+    assert "unreachable.example" in B.breaker_state()
+    start = _t.time()
+    assert B._get_json(url) is None                      # skipped immediately, no retries
+    assert _t.time() - start < 0.05
+    B._reset("unreachable.example")
+    assert "unreachable.example" not in B.breaker_state()

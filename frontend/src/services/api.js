@@ -1,6 +1,10 @@
 import axios from 'axios';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE || '/api';
+// VITE_API_BASE may be given with or without the /api suffix (https://host or https://host/api)
+const API_BASE_URL = (() => {
+  const base = (import.meta.env.VITE_API_BASE || '/api').trim().replace(/\/+$/, '');
+  return base.endsWith('/api') ? base : `${base}/api`;
+})();
 const http = axios.create({ baseURL: API_BASE_URL, timeout: 120000 });
 
 /** Human-readable message from an axios error (uses the API's `detail`). */

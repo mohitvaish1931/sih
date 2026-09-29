@@ -134,3 +134,9 @@ def test_transactions_and_watchlist(client):
 def test_health_reports_components(client):
     h = client.get("/api/health").json()
     assert h["database"]["ok"] is True and "llm" in h
+
+
+def test_diagnostics_reports_every_provider(client):
+    d = client.get("/api/diagnostics").json()
+    assert {"blockstream", "mempool_space", "blockchain_info", "coingecko"} <= set(d["providers"])
+    assert all("ok" in p for p in d["providers"].values())
