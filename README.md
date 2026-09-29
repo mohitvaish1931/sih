@@ -105,7 +105,8 @@ database to create. Demo cases are seeded automatically on startup.
 - Check `https://<service>.onrender.com/api/health`.
 
 **2. Frontend on Vercel**
-- Import the repo, set **Root Directory = `frontend`** (Vite preset, build `npm run build`, output `dist`).
+- Import the repo and keep the **Root Directory empty** (repo root). The root `vercel.json` installs and
+  builds `frontend/` and serves `frontend/dist`. (Setting Root Directory to `frontend` also works.)
 - Environment variable `VITE_API_BASE` = `https://<service>.onrender.com/api` (note the `/api`), then redeploy.
 - Routing is hash-based (`#/wallet/<address>`), so no rewrites are needed.
 
