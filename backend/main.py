@@ -38,10 +38,11 @@ _ensure_demo_scenarios()
 
 
 def _warm_up():
-    from app.services.anomaly_engine import warm_population, build_live_reference
+    from app.services.anomaly_engine import warm_population, build_live_reference, ensure_model
     db = SessionLocal()
     try:
         warm_population(db)
+        ensure_model(db)        # train before the first investigation needs it
         if ML_LIVE_REFERENCE:
             build_live_reference(db)
     except Exception as exc:

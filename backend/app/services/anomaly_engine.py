@@ -279,21 +279,59 @@ def build_live_reference(db: Session, target: int = LIVE_REFERENCE_TARGET) -> in
         time.sleep(0.25)
     if added:
         with _model_lock:
-            _model["clf"] = None     # retrain on the enlarged population
+            _model["trained_at"] = 0     # stale: retrain on the enlarged population in the background
     log.info("ML reference population: +%d live mainnet addresses", added)
     return added
 
 
-def _get_model(db: Session):
+N_ESTIMATORS = 150
+
+
+def _fit(db: Session):
+    size = len(_feature_cache)
+    X = _population(db)
+    clf = IsolationForest(n_estimators=N_ESTIMATORS, contamination="auto", random_state=42)
+    clf.fit(X)
+    return {"clf": clf, "X": X, "scores": clf.score_samples(X), "trained_at": time.time(), "size": size}
+
+
+def _retrain_in_background():
+    from app.database import SessionLocal
+    db = SessionLocal()
+    try:
+        fitted = _fit(db)
+        with _model_lock:
+            _model.update(fitted)
+    except Exception as exc:
+        log.warning("Background retrain failed: %s", exc)
+    finally:
+        _model["training"] = False
+        db.close()
+
+
+def ensure_model(db: Session):
+    """Train the model if none exists yet (called from the startup warm-up thread)."""
     with _model_lock:
-        size = len(_feature_cache)
-        stale = time.time() - _model["trained_at"] > _RETRAIN_SECONDS
-        if _model["clf"] is None or stale or abs(size - _model["size"]) >= max(3, 0.1 * max(1, _model["size"])):
-            X = _population(db)
-            clf = IsolationForest(n_estimators=200, contamination="auto", random_state=42)
-            clf.fit(X)
-            _model.update({"clf": clf, "X": X, "scores": clf.score_samples(X),
-                           "trained_at": time.time(), "size": size})
+        if _model["clf"] is None:
+            _model.update(_fit(db))
+
+
+def _get_model(db: Session):
+    """
+    Current model. Only the very first call trains synchronously; afterwards a stale
+    model keeps serving while a replacement trains in the background, so a slow CPU
+    (e.g. a free cloud instance) never makes an investigation wait on training.
+    """
+    with _model_lock:
+        if _model["clf"] is None:
+            _model.update(_fit(db))
+        else:
+            size = len(_feature_cache)
+            stale = time.time() - _model["trained_at"] > _RETRAIN_SECONDS
+            grown = abs(size - _model["size"]) >= max(3, 0.1 * max(1, _model["size"]))
+            if (stale or grown) and not _model.get("training"):
+                _model["training"] = True
+                threading.Thread(target=_retrain_in_background, name="ml-retrain", daemon=True).start()
         return _model["clf"], _model["X"], _model["scores"]
 
 
@@ -340,7 +378,7 @@ def run_isolation_forest(db: Session, address: str, views: Optional[List[Dict]] 
         "investigated_wallets": len(_feature_cache),
         "features": {k: round(v, 4) for k, v in feats.items() if not k.startswith("_")},
         "scoring": "one-sided (benign-direction deviations clipped to population median)",
-        "model": "IsolationForest(n_estimators=200)",
+        "model": f"IsolationForest(n_estimators={N_ESTIMATORS})",
         "population": _model.get("composition"),
     }
 
