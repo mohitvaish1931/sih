@@ -61,8 +61,7 @@ backend/   FastAPI + SQLAlchemy (SQLite or Postgres/Supabase) + scikit-learn
 cd backend
 python -m venv venv && venv\Scripts\activate        # macOS/Linux: source venv/bin/activate
 pip install -r requirements.txt
-copy .env.example .env                               # optional: set DATABASE_URL for Postgres (Neon / Supabase)
-python seed_data.py                                  # demo scenarios (add --force for Postgres)
+copy .env.example .env                               # optional - works without any database setup
 uvicorn main:app --reload
 ```
 
@@ -92,18 +91,18 @@ Optional: install [Ollama](https://ollama.com) and `ollama pull qwen3:14b` to ha
 the evidence narrative. Without it, SIFRA uses the deterministic evidence template, and the header shows
 `LLM: TEMPLATE`.
 
-## Deploy (Vercel + Render + Neon/Supabase)
+## Deploy (Vercel + Render, no database needed)
 
 Vercel hosts the static frontend. The API needs a long-running Python server (SSE monitoring, background ML
-warm-up, 8-12 s investigations), so it runs on Render. The database is your existing Postgres (Neon or Supabase).
+warm-up, 8-12 s investigations), so it runs on Render. Storage is a built-in SQLite file - there is no
+database to create. Demo cases are seeded automatically on startup.
 
 **1. Backend on Render**
 - New -> **Blueprint** -> select this repo (uses `render.yaml`), or New -> Web Service with
   root `backend`, build `pip install -r requirements.txt`, start `uvicorn main:app --host 0.0.0.0 --port $PORT`.
-- Environment: `DATABASE_URL` = Postgres **pooler** URL, `CORS_ORIGINS` = your Vercel URL,
-  `LLM_ENABLED=false`. See `backend/.env.example` for every option.
+- Environment: `CORS_ORIGINS` = your Vercel URL and `LLM_ENABLED=false`. Nothing else is required;
+  see `backend/.env.example` for every option.
 - Check `https://<service>.onrender.com/api/health`.
-- Demo cases in Postgres (touches demo rows only): run `python seed_data.py --force` locally with the same `DATABASE_URL`.
 
 **2. Frontend on Vercel**
 - Import the repo, set **Root Directory = `frontend`** (Vite preset, build `npm run build`, output `dist`).
@@ -113,7 +112,9 @@ warm-up, 8-12 s investigations), so it runs on Render. The database is your exis
 **3. Relay sensor (optional)** runs on any always-on machine:
 `TELEMETRY_TOKEN=<same as Render> python sensor/relay_sensor.py --api https://<service>.onrender.com`
 
-Render's free tier sleeps after ~15 min idle; open `/api/health` once before a demo.
+Render's free tier sleeps after ~15 min idle and its disk is temporary: after a restart the SQLite file starts
+fresh (demo cases are re-seeded automatically; past investigations and alerts are gone). Open `/api/health`
+once before a demo. For permanent storage later, set `DATABASE_URL` to any Postgres.
 
 ## Demo script (5 minutes)
 

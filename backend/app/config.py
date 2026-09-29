@@ -25,14 +25,19 @@ def _float(name: str, default: float) -> float:
 
 
 def _database_url() -> str:
-    # DATABASE_URL is the standard name (Render, Railway, Neon); SUPABASE_DB_URL kept for older .env files
-    url = (os.getenv("DATABASE_URL") or os.getenv("SUPABASE_DB_URL") or "sqlite:///./test.db").strip().strip('"\'')
+    # No database server is needed: without a URL SIFRA uses a local SQLite file, created automatically.
+    # DATABASE_URL (Postgres) is optional; SUPABASE_DB_URL is accepted as an older alias.
+    url = (os.getenv("DATABASE_URL") or os.getenv("SUPABASE_DB_URL") or "sqlite:///./sifra.db").strip().strip('"\'')
     if url.startswith("postgres://"):
         url = "postgresql://" + url[len("postgres://"):]   # SQLAlchemy 2 rejects the short scheme
     return url
 
 
 DATABASE_URL = _database_url()
+
+# Seed the demo investigation scenarios at startup when they are missing (SQLite only).
+# Needed on hosts with an ephemeral disk (Render free tier) where the file resets on restart.
+AUTO_SEED_DEMO = os.getenv("AUTO_SEED_DEMO", "true").lower() in ("1", "true", "yes")
 
 # CORS: comma separated list, "*" allows everything (hackathon default)
 CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "*").split(",") if o.strip()]

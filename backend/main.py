@@ -7,8 +7,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 
-from app.config import CORS_ORIGINS, ML_LIVE_REFERENCE
-from app.database import init_db_schema, SessionLocal
+from app.config import AUTO_SEED_DEMO, CORS_ORIGINS, ML_LIVE_REFERENCE
+from app.database import IS_SQLITE, init_db_schema, SessionLocal
 from app.routes import alerts, analysis, graph, live, meta, telemetry, wallet
 from app.services.investigation import ENGINE_VERSION
 
@@ -16,6 +16,25 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 log = logging.getLogger("sifra")
 
 init_db_schema()
+
+
+def _ensure_demo_scenarios():
+    """Seed the demo cases if they are missing (fresh or reset SQLite file)."""
+    if not (AUTO_SEED_DEMO and IS_SQLITE):
+        return
+    from app.models import AddressTx
+    db = SessionLocal()
+    try:
+        present = db.query(AddressTx.id).filter(AddressTx.address == "bc1_sus_peel_root").first()
+    finally:
+        db.close()
+    if not present:
+        from seed_data import seed_database
+        log.info("Seeding demo scenarios into the local database ...")
+        seed_database()
+
+
+_ensure_demo_scenarios()
 
 
 def _warm_up():

@@ -11,6 +11,7 @@ _tmp = tempfile.mkdtemp(prefix="sifra-tests-")
 os.environ["DATABASE_URL"] = f"sqlite:///{os.path.join(_tmp, 'test.db')}"   # never the real DB from .env
 os.environ["SUPABASE_DB_URL"] = os.environ["DATABASE_URL"]
 os.environ["ML_LIVE_REFERENCE"] = "false"
+os.environ["AUTO_SEED_DEMO"] = "false"
 os.environ["LLM_ENABLED"] = "false"
 os.environ["GEOIP_ENABLED"] = "false"
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

@@ -1,5 +1,6 @@
 # Render blueprint for the SIFRA API (New -> Blueprint -> pick this repo).
 # The frontend is deployed separately on Vercel (Root Directory: frontend).
+# No database service is needed: the API uses a built-in SQLite file.
 services:
   - type: web
     name: sifra-api
@@ -12,8 +13,6 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.8
-      - key: DATABASE_URL          # Neon / Supabase pooler URL - set in the dashboard
-        sync: false
       - key: CORS_ORIGINS          # e.g. https://your-app.vercel.app
         sync: false
       - key: TELEMETRY_TOKEN       # shared secret for the relay sensor
@@ -21,4 +20,6 @@ services:
       - key: LLM_ENABLED           # no Ollama on Render - use the evidence template
         value: "false"
       - key: ML_LIVE_REFERENCE
+        value: "true"
+      - key: AUTO_SEED_DEMO        # built-in SQLite; demo cases re-seeded after each restart
         value: "true"
