@@ -12,7 +12,10 @@ funds from the wallet (KYC / legal-notice targets).
 from collections import defaultdict
 from typing import Dict, List
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
+
+from app.models import AddressTx
 
 from app.services.entity_tagger import ILLICIT_SEVERITY, tag_address
 
@@ -125,8 +128,15 @@ def _indirect_exposure(db: Session, address: str, flows: Dict[str, Dict], entiti
         (a for a in flows if not (entities.get(a) or {}).get("is_known")),
         key=lambda a: -(flows[a]["received_from"] + flows[a]["sent_to"]),
     )[:max_neighbours]
+    if not neighbours:
+        return []
+    # One aggregate query: only neighbours with history beyond the txs they share with
+    # the target can reveal a second hop, so the rest are never loaded.
+    known = dict(db.query(AddressTx.address, func.count(AddressTx.id))
+                 .filter(AddressTx.address.in_(neighbours)).group_by(AddressTx.address).all())
+    candidates = [n for n in neighbours if known.get(n, 0) > flows[n]["tx_count"]]
     found = []
-    for n in neighbours:
+    for n in candidates:
         views = load_wallet_txs(db, n, limit=200)
         if len(views) <= 1:
             continue
