@@ -97,8 +97,11 @@ def _is_down(host: str) -> bool:
 
 def _trip(host: str, reason: str, seconds: float = BREAKER_SECONDS):
     with _breaker_lock:
-        _host_down[host] = {"until": time.time() + seconds, "reason": reason}
-    log.warning("Provider %s unavailable (%s) - skipping it for %ds", host, reason, seconds)
+        strikes = (_host_down.get(host) or {}).get("strikes", 0) + 1
+        # repeated failures back off exponentially (3 min, 6, 12 ... capped at 1 h)
+        wait = min(3600, seconds * (2 ** (strikes - 1)))
+        _host_down[host] = {"until": time.time() + wait, "reason": reason, "strikes": strikes}
+    log.warning("Provider %s unavailable (%s) - skipping it for %ds", host, reason, wait)
 
 
 def _reset(host: str):
@@ -146,6 +149,45 @@ def _get_json(url: str, timeout: float = HTTP_TIMEOUT, retries: int = 2) -> Opti
             return None
     _trip(host, "server errors")
     return None
+
+
+MONITORED = {
+    "mempool.space": "https://mempool.space/api/blocks/tip/height",
+    "blockstream.info": "https://blockstream.info/api/blocks/tip/height",
+    "api.coingecko.com": "https://api.coingecko.com/api/v3/ping",
+    "blockchain.info": "https://blockchain.info/q/getblockcount",
+    "www.walletexplorer.com": "https://www.walletexplorer.com/api/1/address-lookup?address=1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa&caller=sifra",
+}
+MONITOR_INTERVAL = 600
+
+
+def check_providers() -> Dict[str, Dict[str, Any]]:
+    """Probe every provider in parallel; mark unreachable ones down until the next check."""
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=len(MONITORED)) as pool:
+        results = dict(zip(MONITORED, pool.map(probe, MONITORED.values())))
+    for host, res in results.items():
+        if res["ok"]:
+            _reset(host)
+        else:
+            with _breaker_lock:
+                _host_down[host] = {"until": time.time() + MONITOR_INTERVAL + 120,
+                                    "reason": res.get("error") or f"HTTP {res.get('status')}", "strikes": 1}
+    down = [h for h, r in results.items() if not r["ok"]]
+    log.info("Provider check: %s", f"unreachable {down}" if down else "all reachable")
+    return results
+
+
+def start_provider_monitor():
+    """Background re-check so user requests never wait on a provider that is down."""
+    def loop():
+        while True:
+            try:
+                check_providers()
+            except Exception as exc:  # pragma: no cover - never let the monitor die
+                log.warning("Provider monitor error: %s", exc)
+            time.sleep(MONITOR_INTERVAL)
+    threading.Thread(target=loop, name="provider-monitor", daemon=True).start()
 
 
 def probe(url: str, timeout: float = 6.0) -> Dict[str, Any]:
@@ -416,7 +458,15 @@ def get_mempool_stats() -> Dict:
         return cached
 
     data = _get_json("https://mempool.space/api/mempool", timeout=6, retries=1)
-    fees = _get_json("https://mempool.space/api/v1/fees/recommended", timeout=6, retries=1)
+    fees = _get_json("https://mempool.space/api/v1/fees/recommended", timeout=6, retries=1) if data else None
+    if not data:
+        # Blockstream exposes the same Esplora mempool summary plus fee estimates by target block
+        data = _get_json("https://blockstream.info/api/mempool", timeout=6, retries=1)
+        est = _get_json("https://blockstream.info/api/fee-estimates", timeout=6, retries=1) or {}
+        if est:
+            fees = {"fastestFee": round(est.get("1", 0)), "halfHourFee": round(est.get("3", 0)),
+                    "hourFee": round(est.get("6", 0)), "economyFee": round(est.get("144", 0)),
+                    "minimumFee": round(est.get("1008", 0))}
 
     result = {
         "tx_count": data.get("count", 0) if data else 0,
@@ -445,6 +495,9 @@ def get_latest_blocks(count: int = 5) -> List[Dict]:
         return cached
 
     data = _get_json("https://mempool.space/api/v1/blocks", timeout=6, retries=1)
+    if not data or not isinstance(data, list):
+        # Blockstream: same block fields, without mempool.space's mining-pool extras
+        data = _get_json("https://blockstream.info/api/blocks", timeout=6, retries=1)
     if not data or not isinstance(data, list):
         return []
 
@@ -475,7 +528,11 @@ def get_block_txs(block_hash: str, pages: int = 2) -> List[Dict]:
         return cached
     txs: List[Dict] = []
     for page in range(pages):
-        data = _get_json(f"https://mempool.space/api/block/{block_hash}/txs/{page * 25}", timeout=8, retries=1)
+        data = None
+        for base in ("https://mempool.space/api", "https://blockstream.info/api"):
+            data = _get_json(f"{base}/block/{block_hash}/txs/{page * 25}", timeout=8, retries=1)
+            if data:
+                break
         if not data:
             break
         txs.extend(_normalize_esplora_tx(tx, "") for tx in data)
@@ -512,12 +569,6 @@ def get_btc_price_usd() -> Dict:
         _cache_set(cache_key, result)
         return result
 
-    data = _get_json("https://mempool.space/api/v1/prices", timeout=6, retries=1)
-    if data and data.get("USD"):
-        result = {"usd": data.get("USD", 0), "inr": 0, "usd_24h_change": 0, "usd_market_cap": 0, "source": "mempool.space"}
-        _cache_set(cache_key, result)
-        return result
-
     data = _get_json("https://blockchain.info/ticker", timeout=6, retries=1)
     if data and "USD" in data:
         result = {
@@ -527,6 +578,12 @@ def get_btc_price_usd() -> Dict:
             "usd_market_cap": 0,
             "source": "blockchain.info",
         }
+        _cache_set(cache_key, result)
+        return result
+
+    data = _get_json("https://mempool.space/api/v1/prices", timeout=6, retries=1)
+    if data and data.get("USD"):
+        result = {"usd": data.get("USD", 0), "inr": 0, "usd_24h_change": 0, "usd_market_cap": 0, "source": "mempool.space"}
         _cache_set(cache_key, result)
         return result
 

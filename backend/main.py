@@ -52,6 +52,8 @@ def _warm_up():
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    from app.services.bitcoin_api import start_provider_monitor
+    start_provider_monitor()
     threading.Thread(target=_warm_up, daemon=True).start()
     yield
 
