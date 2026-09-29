@@ -1,0 +1,29 @@
+# Secrets - only the .env.example templates are committed
+.env
+.env.*
+!.env.example
+
+# Dependencies / builds
+node_modules/
+venv/
+.venv/
+dist/
+dist-ssr/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Local data
+*.db
+*.db-journal
+*.sqlite3
+
+# Tooling / OS
+.claude/
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+*.log
+*.tar.gz

@@ -1,0 +1,24 @@
+# Render blueprint for the SIFRA API (New -> Blueprint -> pick this repo).
+# The frontend is deployed separately on Vercel (Root Directory: frontend).
+services:
+  - type: web
+    name: sifra-api
+    runtime: python
+    rootDir: backend
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.8
+      - key: DATABASE_URL          # Neon / Supabase pooler URL - set in the dashboard
+        sync: false
+      - key: CORS_ORIGINS          # e.g. https://your-app.vercel.app
+        sync: false
+      - key: TELEMETRY_TOKEN       # shared secret for the relay sensor
+        generateValue: true
+      - key: LLM_ENABLED           # no Ollama on Render - use the evidence template
+        value: "false"
+      - key: ML_LIVE_REFERENCE
+        value: "true"
